@@ -1,39 +1,34 @@
-import type { DocumentUploadResult, UploadProcessingStatus } from '@/types'
-import type { DocumentUploadService } from '@/services/documents.types'
-import { httpClient } from './http-client'
+import { env } from '@/lib/env'
+import type { DocumentSummary, ProfileSuggestion, UploadResult } from '@/types'
+import { http, newIdempotencyKey } from './http-client'
 
-const POLL_INTERVAL_MS = 1500
-const POLL_TIMEOUT_MS = 2 * 60 * 1000
+export const documentsApi = {
+  list(): Promise<DocumentSummary[]> {
+    return http.get<DocumentSummary[]>('/api/documents')
+  },
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * Implementación real propuesta: sube el archivo y sondea el resultado.
- * No se asume que estos endpoints ya existen — ver notas en documents.types.ts.
- */
-export const documentsApiService: DocumentUploadService = {
-  async uploadDocument(file, onStatusChange) {
-    onStatusChange('uploading')
+  /**
+   * Subir un documento: el backend lo valida (tipo y peso), lo guarda, lo registra con quien lo subió y lo analiza con
+   * Processing en el acto. La respuesta trae las OC creadas o el motivo del fallo.
+   */
+  upload(file: File, idempotencyKey: string = newIdempotencyKey()): Promise<UploadResult> {
     const form = new FormData()
     form.append('file', file)
+    return http.postForm<UploadResult>('/api/documents', form, { 'Idempotency-Key': idempotencyKey })
+  },
 
-    const initial = await httpClient.postForm<DocumentUploadResult>('/api/orders/upload', form)
-    onStatusChange(initial.status)
-    if (initial.status === 'completed' || initial.status === 'failed') return initial
+  /** Reanalizar un documento (p. ej. uno que falló). Se bloquea si ya hay OC aprobadas o exportadas. */
+  process(documentId: number, idempotencyKey: string = newIdempotencyKey()): Promise<UploadResult> {
+    return http.post<UploadResult>(`/api/documents/${documentId}/process`, undefined, { 'Idempotency-Key': idempotencyKey })
+  },
 
-    const start = Date.now()
-    let last = initial
-    while (Date.now() - start < POLL_TIMEOUT_MS) {
-      await delay(POLL_INTERVAL_MS)
-      last = await httpClient.get<DocumentUploadResult>(`/api/orders/uploads/${initial.uploadId}`)
-      onStatusChange(last.status)
-      if (last.status === 'completed' || last.status === 'failed') return last
-    }
+  /** URL del archivo original (evidencia para comparar con lo extraído). */
+  fileUrl(documentId: number): string {
+    return `${env.apiBaseUrl}/api/documents/${documentId}/file`
+  },
 
-    const timeoutStatus: UploadProcessingStatus = 'failed'
-    onStatusChange(timeoutStatus)
-    return { ...last, status: timeoutStatus, errorMessage: 'Tiempo de espera agotado esperando el procesamiento.' }
+  /** Para un formato de cliente que Processing no reconoce: propone qué columna parece cada dato (borrador). */
+  profileSuggestion(documentId: number): Promise<ProfileSuggestion> {
+    return http.post<ProfileSuggestion>(`/api/documents/${documentId}/profile-suggestion`)
   },
 }

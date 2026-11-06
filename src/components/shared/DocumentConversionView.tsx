@@ -3,9 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DocumentPreview } from '@/components/shared/DocumentPreview'
-import { HOMOLOGATION_METHOD_LABELS, SCORE_TONE_CLASSES, scoreTone } from '@/lib/labels'
-import { lineSimilarity } from '@/lib/extraction'
-import { cn } from '@/lib/utils'
+import { MatchMethodBadge } from '@/components/shared/StatusBadge'
 import type { OrderLine } from '@/types'
 
 interface DocumentConversionViewProps {
@@ -14,16 +12,22 @@ interface DocumentConversionViewProps {
   fileMimeType?: string | null
   lines: OrderLine[] | null
   loading?: boolean
+  /** Mensaje cuando no hay líneas (p. ej. el motivo del fallo). */
+  emptyMessage?: string
 }
 
 /**
- * Vista de "conversión": documento original a un lado, información extraída
- * (según la plantilla del sistema) con nivel de similitud al otro. El
- * archivo solo se muestra cuando existe un Blob real del operador (sesión
- * actual) o un `driveFileUrl` real del backend; de lo contrario se marca
- * explícitamente como simulado — nunca se inventa un documento.
+ * Documento original a un lado, información extraída por Processing al otro. Muestra cómo se obtuvo el material de cada línea
+ * (sin puntajes ni semáforos: un puntaje alto no es una decisión).
  */
-export function DocumentConversionView({ fileName, fileUrl, fileMimeType, lines, loading }: DocumentConversionViewProps) {
+export function DocumentConversionView({
+  fileName,
+  fileUrl,
+  fileMimeType,
+  lines,
+  loading,
+  emptyMessage = 'Aún no se ha procesado el documento.',
+}: DocumentConversionViewProps) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <Card className="overflow-hidden">
@@ -45,9 +49,9 @@ export function DocumentConversionView({ fileName, fileUrl, fileMimeType, lines,
             <ScanSearch className="size-4 text-muted-foreground" />
             Información extraída
           </CardTitle>
-          <CardDescription>Plantilla del sistema, con nivel de similitud por línea (simulado)</CardDescription>
+          <CardDescription>Lo que Processing leyó y cómo homologó cada producto</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2.5">
+        <CardContent className="max-h-[420px] space-y-2.5 overflow-y-auto">
           {loading && (
             <>
               <Skeleton className="h-16 w-full rounded-lg" />
@@ -56,41 +60,32 @@ export function DocumentConversionView({ fileName, fileUrl, fileMimeType, lines,
             </>
           )}
           {!loading && (!lines || lines.length === 0) && (
-            <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-              Aún no se ha procesado el documento.
-            </p>
+            <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">{emptyMessage}</p>
           )}
           {!loading &&
-            lines?.map((line) => {
-              const similarity = lineSimilarity(line)
-              return (
-                <div key={line.id} className="space-y-1.5 rounded-lg border p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">
-                        Línea {line.lineNumber} · {line.customerCode}
-                      </p>
-                      <p className="truncate text-sm">{line.description}</p>
-                    </div>
-                    {similarity !== null ? (
-                      <Badge className={cn('shrink-0', SCORE_TONE_CLASSES[scoreTone(similarity)])}>
-                        {similarity.toFixed(1)}%
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="shrink-0 text-muted-foreground">
-                        Sin coincidencia
-                      </Badge>
-                    )}
+            lines?.map((line) => (
+              <div key={line.line_id} className="space-y-1.5 rounded-lg border p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">
+                      Línea {line.position} · {line.source_code ?? 'sin código'}
+                    </p>
+                    <p className="truncate text-sm">{line.description}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Sistema: Material ID{' '}
-                    <span className="font-mono">{line.confirmedMaterialId ?? line.proposedMaterialId ?? 'sin asignar'}</span>
-                    {' · '}
-                    {HOMOLOGATION_METHOD_LABELS[line.homologationMethod]}
-                  </p>
+                  {line.status === 'OMITTED' ? (
+                    <Badge variant="outline" className="shrink-0 text-muted-foreground">
+                      Omitida
+                    </Badge>
+                  ) : (
+                    <MatchMethodBadge method={line.match_method} className="shrink-0" />
+                  )}
                 </div>
-              )
-            })}
+                <p className="text-xs text-muted-foreground">
+                  Cantidad: <span className="font-mono">{line.quantity ?? `ilegible ("${line.raw_quantity ?? ''}")`}</span>
+                  {' · '}Material ID: <span className="font-mono">{line.material_id ?? 'sin asignar'}</span>
+                </p>
+              </div>
+            ))}
         </CardContent>
       </Card>
     </div>

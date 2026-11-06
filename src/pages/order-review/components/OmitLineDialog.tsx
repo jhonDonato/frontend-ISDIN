@@ -1,18 +1,11 @@
 import { useState } from 'react'
 import { Loader2 } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { OrderLine } from '@/types'
 
-interface ExcludeLineDialogProps {
+interface OmitLineDialogProps {
   line: OrderLine | null
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -20,15 +13,16 @@ interface ExcludeLineDialogProps {
   busy: boolean
 }
 
-export function ExcludeLineDialog({ line, open, onOpenChange, onConfirm, busy }: ExcludeLineDialogProps) {
+/** Omitir una línea con motivo escrito: no se envía a SAP y no bloquea. Es la salida correcta si el producto no existe. */
+export function OmitLineDialog({ line, open, onOpenChange, onConfirm, busy }: OmitLineDialogProps) {
   const [reason, setReason] = useState('')
-
   if (!line) return null
 
   const trimmed = reason.trim()
+  const valid = trimmed.length >= 3
 
   async function handleConfirm() {
-    if (!trimmed) return
+    if (!valid) return
     await onConfirm(trimmed)
     setReason('')
   }
@@ -43,34 +37,35 @@ export function ExcludeLineDialog({ line, open, onOpenChange, onConfirm, busy }:
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Excluir línea {line.lineNumber}</DialogTitle>
+          <DialogTitle>Omitir línea {line.position}</DialogTitle>
           <DialogDescription>
-            {line.description}. El producto se conserva en la orden para trazabilidad, pero no se enviará a SAP ni
-            contará como pendiente de homologación. El motivo es obligatorio.
+            {line.description}. La línea se conserva en la orden para trazabilidad, pero no se enviará a SAP y dejará de
+            bloquear. Nunca se asigna un material que no corresponde: si el producto no existe, se omite. El motivo es obligatorio
+            y queda registrado a tu nombre.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="exclusion-reason">
-            Motivo de exclusión
+          <label className="text-xs font-medium text-muted-foreground" htmlFor="omit-reason">
+            Motivo
           </label>
           <Textarea
-            id="exclusion-reason"
+            id="omit-reason"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Ej: producto descontinuado, cliente solicitó retirarlo, duplicado…"
-            className="min-h-20"
+            placeholder="Ej.: el producto no existe en el maestro"
+            rows={3}
             autoFocus
           />
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancelar
           </Button>
-          <Button variant="destructive" onClick={handleConfirm} disabled={!trimmed || busy}>
+          <Button variant="destructive" onClick={handleConfirm} disabled={!valid || busy}>
             {busy && <Loader2 className="size-3.5 animate-spin" />}
-            Excluir línea
+            Omitir línea
           </Button>
         </DialogFooter>
       </DialogContent>

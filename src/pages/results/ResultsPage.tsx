@@ -1,302 +1,312 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import {
-  AlertTriangle,
-  ArrowLeft,
-  Ban,
-  CalendarClock,
-  CheckCircle2,
-  CircleDot,
-  Download,
-  FileCheck2,
-  FlaskConical,
-  Inbox,
-  Loader2,
-  Package,
-  PackageCheck,
-  PenLine,
-  PlayCircle,
-  ShieldCheck,
-  UploadCloud,
-  XCircle,
-} from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
-import { useOrderWorkspace } from '@/hooks/useOrderWorkspace'
-import { useCsvDownload } from '@/hooks/useCsvDownload'
+import { toast } from 'sonner'
+import { ArrowLeft, Ban, Clock, Download, FileCheck2, History, Loader2, Package, Send, Timer } from 'lucide-react'
+import { ordersApi } from '@/services/api/orders.api'
+import { newIdempotencyKey } from '@/services/api/http-client'
+import { useDebounced, useServerEvents } from '@/hooks/useServerEvents'
 import { ErrorState } from '@/components/shared/ErrorState'
-import { EmptyState } from '@/components/shared/EmptyState'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { OrderStatusBadge } from '@/components/shared/StatusBadge'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { formatDateTime } from '@/lib/format'
-import { env } from '@/lib/env'
-import { cn } from '@/lib/utils'
-import type { OrderHistoryEntry } from '@/types'
+import { formatCountdown, secondsUntil } from '@/lib/dates'
+import { AUDIT_ACTION_LABEL, ORDER_STATUS_HINT } from '@/lib/labels'
+import type { ApiStatus, HistoryItem, OrderDetail } from '@/types'
 
-const EXPORT_STATUS_LABEL: Record<string, string> = {
-  not_ready: 'No lista',
-  ready: 'Lista para exportar',
-  exporting: 'Exportando…',
-  exported: 'CSV descargado',
-  failed: 'Exportación fallida',
-}
-
-const HISTORY_ICON: Record<OrderHistoryEntry['type'], LucideIcon> = {
-  received: Inbox,
-  document_uploaded: UploadCloud,
-  processing_started: PlayCircle,
-  processing_completed: CircleDot,
-  line_updated: PenLine,
-  line_excluded: XCircle,
-  delivery_updated: CalendarClock,
-  validated: ShieldCheck,
-  confirmed: CheckCircle2,
-  exported: FileCheck2,
-  error: XCircle,
+/** Resumen de una acción de la bitácora para mostrarlo en la línea de tiempo. */
+function summarize(item: HistoryItem): string | null {
+  const d = item.detail
+  if (!d) return null
+  if (item.action === 'LINE_OMITTED' && typeof d.reason === 'string') return `Motivo: ${d.reason}`
+  if (item.action === 'ORDER_NUMBER_GENERATED' && typeof d.order_number === 'string') return d.order_number
+  if (item.action === 'ORDER_EXPORTED' && typeof d.file_name === 'string') return d.file_name
+  if (item.action === 'DOCUMENT_PROCESSED' && typeof d.profile === 'string') return `Perfil ${d.profile} · ${d.orders ?? 0} OC`
+  if (d.changes && typeof d.changes === 'object') return Object.keys(d.changes as object).join(', ')
+  if (item.action === 'ORDER_HEADER_UPDATED') return Object.keys(d).join(', ')
+  return null
 }
 
 export function ResultsPage() {
   const { orderId } = useParams<{ orderId: string }>()
-  const workspace = useOrderWorkspace(orderId)
-  const { order, status, error } = workspace
-  const csv = useCsvDownload()
+  const id = Number(orderId)
+
+  const [order, setOrder] = useState<OrderDetail | null>(null)
+  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [status, setStatus] = useState<ApiStatus>('idle')
+  const [error, setError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+
+  const load = useCallback(
+    async (quiet: boolean) => {
+      if (!quiet) setStatus('loading')
+      try {
+        const [o, h] = await Promise.all([ordersApi.get(id), ordersApi.history(id)])
+        setOrder(o)
+        setHistory(h)
+        setError(null)
+        setStatus('success')
+      } catch (err) {
+        if (quiet) return
+        setError(err instanceof Error ? err.message : 'No se pudo cargar la orden.')
+        setStatus('error')
+      }
+    },
+    [id],
+  )
+
+  useEffect(() => {
+    void load(false)
+  }, [load])
+
+  const refreshSoon = useDebounced(() => void load(true))
+  useServerEvents((e) => {
+    if (e.order_id === id) refreshSoon()
+  })
+
+  const exportAt = order?.status === 'READY' ? order.reopen_until : null
+  useEffect(() => {
+    if (!exportAt) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [exportAt])
 
   if (status === 'loading' || status === 'idle') {
     return (
       <div className="space-y-4">
-        <Skeleton className="h-10 w-48" />
-        <Skeleton className="h-40 w-full rounded-xl" />
+        <Skeleton className="h-28 w-full rounded-xl" />
         <Skeleton className="h-64 w-full rounded-xl" />
       </div>
     )
   }
+  if (status === 'error' || !order) return <ErrorState message={error ?? 'No se pudo cargar la orden.'} onRetry={() => void load(false)} />
 
-  if (status === 'error' || !order) {
-    return <ErrorState message={error ?? 'No se pudo cargar la orden.'} onRetry={workspace.refetch} />
-  }
-
-  if (order.status !== 'completed') {
-    return (
-      <div className="space-y-4">
-        <Button variant="ghost" size="sm" render={<Link to={`/orders/${order.id}`} />}>
-          <ArrowLeft className="size-3.5" />
-          Volver al detalle
-        </Button>
-        <EmptyState
-          icon={Package}
-          title="Esta orden todavía no está lista para exportación"
-          description={
-            order.readyForExport
-              ? 'Todas las líneas son válidas. Confirma la orden desde la pantalla de revisión para generar los pedidos derivados.'
-              : 'Existen líneas pendientes de revisión o con errores. Corrígelas y solicita confirmación desde la pantalla de revisión.'
-          }
-          action={
-            <Button size="sm" render={<Link to={`/orders/${order.id}`} />}>
-              Ir a revisión
-            </Button>
-          }
-        />
-      </div>
-    )
-  }
-
-  const excludedLines = order.lines.filter((l) => l.excluded)
-  const nonExcludedLines = order.lines.filter((l) => !l.excluded)
-  const validLines = nonExcludedLines.filter((l) => l.status === 'valid').length
-  const errorLines = nonExcludedLines.filter((l) => l.status !== 'valid').length
-  const csvFilename = csv.lastDownload?.filename ?? `${env.useMocks ? 'MOCK_' : ''}${order.purchaseOrderNumber}.csv`
+  const exp = order.export
+  const secondsLeft = exportAt ? secondsUntil(exportAt, now) : 0
+  const omitted = order.lines.filter((l) => l.status === 'OMITTED')
 
   async function handleDownload() {
-    if (!orderId) return
-    await csv.download(orderId)
+    setDownloading(true)
+    try {
+      const blob = await ordersApi.csv(id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = exp?.file_name ?? `${order?.order_number ?? id}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'No se pudo descargar el CSV.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  async function handleExportNow() {
+    setExporting(true)
+    try {
+      const r = await ordersApi.exportNow(id, newIdempotencyKey())
+      toast.success(`CSV generado: ${r.file_name} (${r.rows} filas).`)
+      await load(true)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'No se pudo exportar.')
+    } finally {
+      setExporting(false)
+    }
   }
 
   return (
     <div className="space-y-5">
-      <Button variant="ghost" size="sm" render={<Link to={`/orders/${order.id}`} />}>
+      <Button variant="ghost" size="sm" render={<Link to={order.status === 'EXPORTED' ? '/orders/converted' : '/orders'} />}>
         <ArrowLeft className="size-3.5" />
-        Volver al detalle
+        Volver a la bandeja
       </Button>
 
-      <Card className="animate-in fade-in slide-in-from-bottom-1 duration-300">
+      <Card className="overflow-hidden">
         <CardHeader className="flex-row items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300">
-              <PackageCheck className="size-5" />
-            </div>
-            <div>
-              <CardTitle className="text-lg">Resultados — {order.purchaseOrderNumber}</CardTitle>
-              <CardDescription>{order.client}</CardDescription>
-            </div>
+          <div>
+            <CardTitle className="text-lg">{order.order_number ?? 'Sin N° de OC'}</CardTitle>
+            <CardDescription>{order.client_name ?? order.client_code}</CardDescription>
           </div>
-          <Badge
-            className={
-              order.exportStatus === 'exported'
-                ? 'border-transparent bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
-                : 'border-transparent bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
-            }
-          >
-            {EXPORT_STATUS_LABEL[order.exportStatus]}
-          </Badge>
+          <OrderStatusBadge status={order.status} />
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Metric label="Líneas enviadas" value={validLines} tone="text-emerald-600 dark:text-emerald-400" />
-          <Metric label="Líneas excluidas" value={excludedLines.length} tone={excludedLines.length > 0 ? 'text-amber-700 dark:text-amber-400' : undefined} />
-          <Metric label="Líneas con error" value={errorLines} tone={errorLines > 0 ? 'text-red-600 dark:text-red-400' : undefined} />
-          <Metric label="Pedidos derivados" value={order.derivedOrders.length} />
-          <Metric label="Confirmada" value={order.confirmedAt ? formatDateTime(order.confirmedAt) : '—'} small />
-          <Metric label="Archivo CSV" value={csvFilename} small />
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">{ORDER_STATUS_HINT[order.status]}</p>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Metric label="Aprobada por" value={order.approved_by ?? '—'} />
+            <Metric label="Aprobada" value={order.approved_at ? formatDateTime(order.approved_at) : '—'} small />
+            <Metric label="Pedidos derivados" value={exp ? String(exp.derived_orders.length) : '—'} />
+            <Metric label="Archivo CSV" value={exp?.file_name ?? 'Aún no generado'} small />
+          </div>
+
+          {order.status === 'REQUIRES_REVIEW' && (
+            <Alert>
+              <AlertTitle>La orden todavía no está aprobada</AlertTitle>
+              <AlertDescription className="flex flex-wrap items-center gap-3">
+                Se exporta a SAP solo después de aprobarla.
+                <Button size="sm" render={<Link to={`/orders/${order.id}`} />}>
+                  Ir a revisarla
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {order.status === 'READY' && (
+            <div className="flex flex-col items-start justify-between gap-3 rounded-lg bg-muted/50 p-3 sm:flex-row sm:items-center">
+              <div className="flex items-center gap-2 text-sm">
+                <Timer className="size-4 text-blue-600" />
+                {secondsLeft > 0 ? (
+                  <span>
+                    Se exporta sola en <strong className="tabular-nums">{formatCountdown(secondsLeft)}</strong>. Hasta entonces se puede reabrir.
+                  </span>
+                ) : (
+                  <span>Ya pasó la ventana de 10 minutos: se exporta en la próxima pasada del proceso automático.</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                {secondsLeft > 0 && (
+                  <Button size="sm" variant="outline" render={<Link to={`/orders/${order.id}`} />}>
+                    Reabrir para editar
+                  </Button>
+                )}
+                <Button size="sm" onClick={handleExportNow} disabled={exporting || secondsLeft > 0}>
+                  {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+                  Exportar ahora
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {order.status === 'EXPORTED' && exp && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-emerald-50 p-3 dark:bg-emerald-950/30">
+              <div className="flex items-center gap-2 text-sm">
+                <FileCheck2 className="size-4 text-emerald-600" />
+                <span>
+                  <strong>{exp.file_name}</strong> · {exp.row_count} filas
+                  {exp.generated_at ? ` · ${formatDateTime(exp.generated_at)}` : ''}
+                  {exp.output_file_id ? ` · guardado en ${exp.output_file_id}` : ''}
+                </span>
+              </div>
+              <Button onClick={handleDownload} disabled={downloading}>
+                {downloading ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                Descargar CSV
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <div className="space-y-5 lg:col-span-2">
-          
-
-          <Card className="animate-in fade-in slide-in-from-bottom-1 duration-300">
-            <CardHeader>
-              <CardTitle>Pedidos derivados</CardTitle>
-              <CardDescription>Máximo 13 líneas por pedido interno al exportar a SAP.</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-3 sm:grid-cols-2">
-              {order.derivedOrders.map((derived, i) => (
-                <div
-                  key={derived.id}
-                  className="animate-in fade-in slide-in-from-bottom-1 fill-mode-backwards flex items-start gap-3 rounded-lg border p-3 transition-colors hover:border-foreground/15"
-                  style={{ animationDelay: `${i * 60}ms`, animationDuration: '300ms' }}
-                >
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-xs font-semibold text-primary">
-                    #{derived.sequence}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-medium">Pedido derivado #{derived.sequence}</p>
-                      <Badge variant={derived.linesCount === 13 ? 'secondary' : 'outline'}>
-                        {derived.linesCount} / 13 líneas
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Líneas: {order.lines
-                        .filter((l) => derived.lineIds.includes(l.id))
-                        .map((l) => l.lineNumber)
-                        .join(', ')}
-                    </p>
+      {exp && exp.derived_orders.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Package className="size-4 text-muted-foreground" />
+              Pedidos derivados
+            </CardTitle>
+            <CardDescription>Máximo 13 líneas por pedido. El ContadorN sigue corriendo entre las OC del mismo archivo.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2">
+            {exp.derived_orders.map((d) => (
+              <div key={d.sequence} className="space-y-2 rounded-lg border p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Pedido derivado #{d.sequence}</p>
+                  <div className="flex items-center gap-1.5">
+                    {d.csv_counter !== null && <Badge variant="outline">ContadorN {d.csv_counter}</Badge>}
+                    <Badge variant={d.lines.length === 13 ? 'secondary' : 'outline'}>{d.lines.length} / 13 líneas</Badge>
                   </div>
                 </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {excludedLines.length > 0 && (
-            <Card className="animate-in fade-in slide-in-from-bottom-1 duration-300">
-              <CardHeader>
-                <CardTitle>Líneas excluidas</CardTitle>
-                <CardDescription>
-                  No se enviaron a SAP. El producto y el motivo quedan registrados para trazabilidad.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {excludedLines.map((line, i) => (
-                  <div
-                    key={line.id}
-                    className="animate-in fade-in slide-in-from-bottom-1 fill-mode-backwards flex items-start gap-3 rounded-lg border border-dashed p-3"
-                    style={{ animationDelay: `${i * 60}ms`, animationDuration: '300ms' }}
-                  >
-                    <Ban className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">
-                        Línea {line.lineNumber} · {line.description}
-                      </p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        <strong>Motivo:</strong> {line.exclusionReason}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          <Card className="animate-in fade-in slide-in-from-bottom-1 duration-300">
-            <CardHeader className="flex-row items-center justify-between gap-3">
-              <div>
-                <CardTitle>Exportación a SAP</CardTitle>
-                <CardDescription>
-                  El frontend solicita el archivo ya generado por el backend; nunca lo construye por su cuenta.
-                </CardDescription>
+                <ul className="space-y-0.5 text-xs text-muted-foreground">
+                  {d.lines.map((l) => {
+                    const line = order.lines.find((x) => x.line_id === l.line_id)
+                    return (
+                      <li key={l.line_id} className="flex justify-between gap-2">
+                        <span className="truncate">
+                          Pos. {l.sap_position} · {line?.description ?? l.line_id}
+                        </span>
+                        <span className="shrink-0 font-mono">{line?.material_id}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
               </div>
-              <Button onClick={handleDownload} disabled={csv.status === 'loading'}>
-                {csv.status === 'loading' ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-                Descargar CSV
-              </Button>
-            </CardHeader>
-            {(csv.status === 'error' || (csv.status === 'success' && csv.lastDownload)) && (
-              <CardContent>
-                {csv.status === 'error' && (
-                  <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 ring-1 ring-red-100 dark:bg-red-950/40 dark:text-red-300 dark:ring-red-900">
-                    <AlertTriangle className="size-4 shrink-0" />
-                    {csv.error}
-                  </div>
-                )}
-                {csv.status === 'success' && csv.lastDownload && (
-                  <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 ring-1 ring-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900">
-                    <CheckCircle2 className="size-4 shrink-0" />
-                    Descargado: {csv.lastDownload.filename}
-                    {csv.lastDownload.isMock && (
-                      <Badge variant="outline" className="ml-1">
-                        Mock
-                      </Badge>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            )}
-          </Card>
-        </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
-        <Card className="animate-in fade-in slide-in-from-bottom-1 h-fit duration-300 lg:sticky lg:top-20">
+      {omitted.length > 0 && (
+        <Card>
           <CardHeader>
-            <CardTitle>Historial de resultados</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Ban className="size-4 text-muted-foreground" />
+              Líneas omitidas ({omitted.length})
+            </CardTitle>
+            <CardDescription>No se enviaron a SAP. El producto y el motivo quedan registrados para trazabilidad.</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-1.5">
+            {omitted.map((l) => (
+              <p key={l.line_id} className="text-sm text-muted-foreground">
+                <span className="line-through">
+                  Línea {l.position} · {l.description}
+                </span>
+                {' — '}
+                {l.omitted_reason ?? 'sin motivo'} ({l.omitted_by ?? 'regla automática del perfil'})
+              </p>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <History className="size-4 text-muted-foreground" />
+            Historial
+          </CardTitle>
+          <CardDescription>Quién hizo qué y cuándo (bitácora de solo lectura).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {history.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sin eventos registrados.</p>
+          ) : (
             <ul className="relative space-y-4 before:absolute before:top-1 before:bottom-1 before:left-[13px] before:w-px before:bg-border">
-              {[...order.history].reverse().map((entry, i) => {
-                const Icon = HISTORY_ICON[entry.type]
+              {[...history].reverse().map((h) => {
+                const extra = summarize(h)
                 return (
-                  <li
-                    key={entry.id}
-                    className="animate-in fade-in slide-in-from-left-1 fill-mode-backwards relative flex items-start gap-3 text-sm"
-                    style={{ animationDelay: `${i * 50}ms`, animationDuration: '250ms' }}
-                  >
-                    <span
-                      className={cn(
-                        'relative z-10 flex size-[26px] shrink-0 items-center justify-center rounded-full bg-background ring-2',
-                        entry.type === 'error' ? 'text-destructive ring-destructive/30' : 'text-primary ring-primary/20',
-                      )}
-                    >
-                      <Icon className="size-3.5" />
+                  <li key={h.id} className="relative flex gap-3">
+                    <span className="z-10 flex size-7 shrink-0 items-center justify-center rounded-full border bg-card text-muted-foreground">
+                      <Clock className="size-3.5" />
                     </span>
-                    <div className="pt-0.5">
-                      <p>{entry.message}</p>
-                      <p className="text-xs text-muted-foreground">{formatDateTime(entry.timestamp)}</p>
+                    <div className="min-w-0 text-sm">
+                      <p className="font-medium">{AUDIT_ACTION_LABEL[h.action] ?? h.action}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {h.actor_kind === 'SYSTEM' ? 'Sistema' : h.actor} · {h.at ? formatDateTime(h.at) : ''}
+                        {extra ? ` · ${extra}` : ''}
+                      </p>
                     </div>
                   </li>
                 )
               })}
             </ul>
-          </CardContent>
-        </Card>
-      </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
 
-function Metric({ label, value, small, tone }: { label: string; value: string | number; small?: boolean; tone?: string }) {
+function Metric({ label, value, small }: { label: string; value: string; small?: boolean }) {
   return (
-    <div>
-      <p className={cn(small ? 'text-sm font-medium' : 'text-xl font-semibold tabular-nums', tone)}>{value}</p>
+    <div className="min-w-0">
       <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={small ? 'truncate text-sm font-medium' : 'truncate text-xl font-semibold tabular-nums'}>{value}</p>
     </div>
   )
 }

@@ -1,45 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AlertCircle, CheckCircle2, FileText, Loader2, RefreshCcw, UploadCloud, X } from 'lucide-react'
 import { DocumentConversionView } from '@/components/shared/DocumentConversionView'
 import { DocumentPreview } from '@/components/shared/DocumentPreview'
+import { AlertList } from '@/components/shared/AlertList'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
-import {
-  ALLOWED_DOCUMENT_EXTENSIONS,
-  formatFileSize,
-  validateDocumentFile,
-} from '@/lib/document-upload'
-import { documentsService } from '@/services/documents.service'
-import { ordersService } from '@/services/orders.service'
-import type { DocumentUploadResult, OrderLine, UploadProcessingStatus } from '@/types'
+import { ALLOWED_DOCUMENT_EXTENSIONS, formatFileSize, validateDocumentFile } from '@/lib/document-upload'
+import { documentsApi } from '@/services/api/documents.api'
+import { ordersApi } from '@/services/api/orders.api'
+import { newIdempotencyKey } from '@/services/api/http-client'
+import type { OrderLine, UploadResult } from '@/types'
 
-const STATUS_LABEL: Record<UploadProcessingStatus, string> = {
-  uploading: 'Subiendo documento…',
-  received: 'Documento recibido, en cola para procesar…',
-  processing: 'Extrayendo información del documento…',
-  completed: 'Procesamiento completado.',
-  failed: 'No se pudo procesar el documento.',
-}
-
-const STATUS_PROGRESS: Record<UploadProcessingStatus, number> = {
-  uploading: 20,
-  received: 45,
-  processing: 75,
-  completed: 100,
-  failed: 100,
-}
+type Phase = 'idle' | 'uploading' | 'done' | 'failed'
 
 /**
- * Carga manual de un documento de orden de compra, en dos pasos:
- * 1) el operador elige el archivo y lo revisa en grande (es el archivo real
- *    que acaba de seleccionar en su navegador, nunca se afirma que ya quedó
- *    guardado en Google Drive: eso lo confirma el backend);
- * 2) al presionar "Convertir" se simula la carga + extracción y recién ahí
- *    se muestra la comparación documento / información extraída.
+ * Carga manual de un documento, en dos pasos:
+ * 1) la persona elige el archivo y lo revisa en grande (es el archivo real que eligió en su navegador);
+ * 2) al presionar "Extraer información" el backend lo valida, lo guarda, lo registra a su nombre y lo analiza con
+ *    Processing en el acto. Se muestra lo que se leyó, o el motivo si no se pudo.
  */
 export function AddDocumentPage() {
   const navigate = useNavigate()
@@ -48,17 +30,17 @@ export function AddDocumentPage() {
   const [file, setFile] = useState<File | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
-  const [status, setStatus] = useState<UploadProcessingStatus | null>(null)
-  const [result, setResult] = useState<DocumentUploadResult | null>(null)
-  const [extractedLines, setExtractedLines] = useState<OrderLine[] | null>(null)
-  const [fetchingOrder, setFetchingOrder] = useState(false)
+  const [phase, setPhase] = useState<Phase>('idle')
+  const [result, setResult] = useState<UploadResult | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [lines, setLines] = useState<OrderLine[] | null>(null)
   const [dragActive, setDragActive] = useState(false)
+  // Una intención = una clave: si hay un doble clic o un reintento, el backend devuelve la misma respuesta sin duplicar.
+  const [uploadKey, setUploadKey] = useState(newIdempotencyKey)
 
-  const busy = status === 'uploading' || status === 'received' || status === 'processing'
-  const converting = status !== null
+  const busy = phase === 'uploading'
+  const converting = phase !== 'idle'
 
-  // El preview es del archivo real que el operador seleccionó en su propio
-  // navegador: se revoca al cambiar/quitar el archivo, nunca se persiste.
   useEffect(() => {
     if (!file) {
       setObjectUrl(null)
@@ -72,66 +54,50 @@ export function AddDocumentPage() {
   function resetState() {
     setFile(null)
     setValidationError(null)
-    setStatus(null)
+    setPhase('idle')
     setResult(null)
-    setExtractedLines(null)
-    setFetchingOrder(false)
+    setFailure(null)
+    setLines(null)
     setDragActive(false)
+    setUploadKey(newIdempotencyKey())
   }
 
   function handleSelectFile(selected: File | null) {
     if (!selected) return
     setResult(null)
-    setStatus(null)
-    setExtractedLines(null)
+    setFailure(null)
+    setLines(null)
+    setPhase('idle')
+    setUploadKey(newIdempotencyKey())
     setFile(selected)
     setValidationError(validateDocumentFile(selected))
   }
 
-  function handleBrowseClick() {
-    inputRef.current?.click()
-  }
-
-  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault()
-    setDragActive(false)
-    handleSelectFile(event.dataTransfer.files?.[0] ?? null)
-  }
-
   async function handleConvert() {
     if (!file || validationError) return
-    setStatus('uploading')
+    setPhase('uploading')
     try {
-      const uploadResult = await documentsService.uploadDocument(file, (nextStatus) => setStatus(nextStatus))
-      setResult(uploadResult)
-      setStatus(uploadResult.status)
-
-      if (uploadResult.status === 'completed' && uploadResult.orderId) {
-        setFetchingOrder(true)
-        const order = await ordersService.getById(uploadResult.orderId)
-        setExtractedLines(order.lines)
-        setFetchingOrder(false)
+      const uploaded = await documentsApi.upload(file, uploadKey)
+      setResult(uploaded)
+      if (uploaded.rejected || uploaded.status === 'FAILED' || uploaded.orders.length === 0) {
+        setFailure(uploaded.error ?? 'No se pudo leer el documento.')
+        setPhase('failed')
+        return
       }
+      const detail = await ordersApi.get(uploaded.orders[0].id)
+      setLines(detail.lines)
+      setPhase('done')
     } catch (err) {
-      setStatus('failed')
-      setResult({
-        uploadId: 'desconocido',
-        status: 'failed',
-        orderId: null,
-        errorMessage: err instanceof Error ? err.message : 'Ocurrió un error inesperado al cargar el documento.',
-        driveFile: null,
-      })
+      setFailure(err instanceof Error ? err.message : 'Ocurrió un error inesperado al cargar el documento.')
+      setPhase('failed')
     }
-  }
-
-  function handleFinish() {
-    navigate('/orders')
   }
 
   return (
     <div className="space-y-5">
       <p className="max-w-2xl text-sm text-muted-foreground">
-        Panel de carga de Archivos.
+        Sube una orden de compra. El sistema la lee, la homologa contra los maestros y deja las órdenes en la bandeja para
+        revisarlas.
       </p>
 
       <input
@@ -146,14 +112,18 @@ export function AddDocumentPage() {
         <div
           role="button"
           tabIndex={0}
-          onClick={handleBrowseClick}
-          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleBrowseClick()}
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && inputRef.current?.click()}
           onDragOver={(e) => {
             e.preventDefault()
             setDragActive(true)
           }}
           onDragLeave={() => setDragActive(false)}
-          onDrop={handleDrop}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragActive(false)
+            handleSelectFile(e.dataTransfer.files?.[0] ?? null)
+          }}
           className={cn(
             'flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-16 text-center transition-colors',
             dragActive ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40 hover:bg-muted/40',
@@ -162,12 +132,12 @@ export function AddDocumentPage() {
           <UploadCloud className="size-7 text-muted-foreground" />
           <p className="text-sm font-medium">Arrastra el archivo aquí o haz clic para elegirlo</p>
           <p className="text-xs text-muted-foreground">
-            Formatos aceptados: {ALLOWED_DOCUMENT_EXTENSIONS.join(', ')} (a confirmar con el backend)
+            Formatos: {ALLOWED_DOCUMENT_EXTENSIONS.join(', ')} · Excel y PDF hasta 200 KB, imágenes hasta 1 MB
           </p>
         </div>
       )}
 
-      {/* Paso 1: revisión del archivo a pantalla completa, antes de convertir */}
+      {/* Paso 1: revisión del archivo antes de extraer */}
       {file && !converting && (
         <div className="space-y-4">
           {validationError && (
@@ -204,74 +174,92 @@ export function AddDocumentPage() {
             </Button>
             <Button onClick={handleConvert} disabled={!!validationError}>
               <RefreshCcw className="size-3.5" />
-              Extraer Información
+              Extraer información
             </Button>
           </div>
         </div>
       )}
 
-      {/* Paso 2: comparación documento original / información extraída */}
+      {/* Paso 2: documento original / información extraída */}
       {file && converting && (
         <div className="space-y-4">
           <DocumentConversionView
             fileName={file.name}
             fileUrl={objectUrl}
             fileMimeType={file.type}
-            lines={extractedLines}
-            loading={busy || fetchingOrder}
+            lines={lines}
+            loading={busy}
+            emptyMessage={failure ?? 'Aún no se ha procesado el documento.'}
           />
 
-          {(busy || status === 'completed' || status === 'failed') && status && (
-            <div className="space-y-2 rounded-lg border bg-muted/30 px-3 py-2.5">
-              <div className="flex items-center gap-2 text-sm">
-                {busy && <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />}
-                {status === 'completed' && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />}
-                {status === 'failed' && <AlertCircle className="size-3.5 shrink-0 text-destructive" />}
-                <span className={status === 'failed' ? 'text-destructive' : ''}>{STATUS_LABEL[status]}</span>
-              </div>
-              <Progress
-                value={STATUS_PROGRESS[status]}
-                className={status === 'failed' ? '[&_[data-slot=progress-indicator]]:bg-destructive' : undefined}
-              />
+          <div className="space-y-2 rounded-lg border bg-muted/30 px-3 py-2.5">
+            <div className="flex items-center gap-2 text-sm">
+              {busy && <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />}
+              {phase === 'done' && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />}
+              {phase === 'failed' && <AlertCircle className="size-3.5 shrink-0 text-destructive" />}
+              <span className={phase === 'failed' ? 'text-destructive' : ''}>
+                {busy && 'Subiendo y extrayendo la información del documento…'}
+                {phase === 'done' && 'Documento procesado.'}
+                {phase === 'failed' && 'No se pudo procesar el documento.'}
+              </span>
             </div>
-          )}
+            <Progress
+              value={busy ? 60 : 100}
+              className={phase === 'failed' ? '[&_[data-slot=progress-indicator]]:bg-destructive' : undefined}
+            />
+          </div>
 
-          {status === 'failed' && result?.errorMessage && (
+          {phase === 'failed' && failure && (
             <Alert variant="destructive">
               <AlertCircle />
-              <AlertTitle>No se pudo completar la carga</AlertTitle>
-              <AlertDescription>{result.errorMessage}</AlertDescription>
+              <AlertTitle>{result?.rejected ? 'El archivo no cumple las reglas' : 'No se pudo completar la carga'}</AlertTitle>
+              <AlertDescription>{failure}</AlertDescription>
             </Alert>
           )}
+          {phase === 'failed' && result && result.alerts.length > 0 && <AlertList alerts={result.alerts} />}
 
-          {status === 'completed' && (
+          {phase === 'done' && result && (
             <Alert>
               <CheckCircle2 />
-              <AlertTitle>Documento procesado</AlertTitle>
+              <AlertTitle>
+                {result.duplicate ? 'Este documento ya estaba recibido' : `Se crearon ${result.orders.length} orden(es) en la bandeja`}
+              </AlertTitle>
               <AlertDescription>
-                Se agregó la orden a la bandeja con la información extraída, junto a las demás órdenes por orden de
-                llegada. Puedes revisarla en Órdenes antes de enviarla a SAP.
+                <ul className="mt-1 space-y-0.5">
+                  {result.orders.map((o) => (
+                    <li key={o.id}>
+                      <Link to={`/orders/${o.id}`} className="font-medium text-primary underline-offset-4 hover:underline">
+                        {o.order_number ?? 'Sin N° de OC'}
+                      </Link>{' '}
+                      — {o.open_errors > 0 ? `${o.open_errors} pendiente(s) por resolver` : 'sin pendientes, lista para aprobar'}
+                    </li>
+                  ))}
+                </ul>
+                {result.profile && <p className="mt-1 text-xs text-muted-foreground">Formato reconocido: {result.profile}.</p>}
               </AlertDescription>
             </Alert>
           )}
 
-          {status === 'completed' && (
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={resetState}>
-                Cargar otro documento
-              </Button>
-              <Button onClick={handleFinish}>Finalizar</Button>
-            </div>
-          )}
-
-          {status === 'failed' && (
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={handleFinish}>
-                Volver a la bandeja
-              </Button>
-              <Button onClick={resetState}>Intentar con otro archivo</Button>
-            </div>
-          )}
+          <div className="flex justify-end gap-2">
+            {phase === 'done' && (
+              <>
+                <Button variant="ghost" onClick={resetState}>
+                  Cargar otro documento
+                </Button>
+                <Button onClick={() => navigate(result && result.orders.length === 1 ? `/orders/${result.orders[0].id}` : '/orders')}>
+                  {result && result.orders.length === 1 ? 'Revisar la orden' : 'Ir a la bandeja'}
+                </Button>
+              </>
+            )}
+            {phase === 'failed' && (
+              <>
+                <Button variant="ghost" onClick={() => navigate('/documents')}>
+                  Ver documentos
+                </Button>
+                <Button onClick={resetState}>Intentar con otro archivo</Button>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

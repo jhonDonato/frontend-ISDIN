@@ -2,6 +2,8 @@ import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/pages/dashboard/DashboardPage'
 import { AddDocumentPage } from '@/pages/add-document/AddDocumentPage'
+import { DocumentsPage } from '@/pages/documents/DocumentsPage'
+import { ClientsPage } from '@/pages/clients/ClientsPage'
 import { OrdersInboxPage } from '@/pages/orders/OrdersInboxPage'
 import { OrdersByClientPage } from '@/pages/orders/OrdersByClientPage'
 import { ClientOrdersPage } from '@/pages/orders/ClientOrdersPage'
@@ -19,13 +21,15 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'documents', element: <DocumentsPage /> },
       { path: 'documents/new', element: <AddDocumentPage /> },
+      { path: 'clients', element: <ClientsPage /> },
       { path: 'orders', element: <OrdersInboxPage /> },
       { path: 'orders/clients', element: <OrdersByClientPage /> },
-      { path: 'orders/clients/:clientName', element: <ClientOrdersPage /> },
+      { path: 'orders/clients/:clientCode', element: <ClientOrdersPage /> },
       { path: 'orders/converted', element: <ConvertedOrdersInboxPage /> },
       { path: 'orders/converted/clients', element: <ConvertedOrdersByClientPage /> },
-      { path: 'orders/converted/clients/:clientName', element: <ConvertedClientOrdersPage /> },
+      { path: 'orders/converted/clients/:clientCode', element: <ConvertedClientOrdersPage /> },
       { path: 'orders/:orderId', element: <OrderReviewPage /> },
       { path: 'orders/:orderId/results', element: <ResultsPage /> },
       { path: '*', element: <NotFoundPage /> },

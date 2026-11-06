@@ -1,4 +1,4 @@
-import { FileCheck2, FilePlus2, Inbox, LayoutDashboard } from 'lucide-react'
+import { FileCheck2, FilePlus2, Files, Inbox, LayoutDashboard, Users } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import {
@@ -50,6 +50,8 @@ const NAV_ITEMS: NavItem[] = [
       { to: '/orders/converted/clients', label: 'Por cliente' },
     ],
   },
+  { to: '/documents', label: 'Documentos', icon: Files },
+  { to: '/clients', label: 'Clientes', icon: Users },
 ]
 
 export function AppSidebar() {
@@ -79,7 +81,12 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {NAV_ITEMS.map((item) => {
-                const isActive = location.pathname.startsWith(item.to)
+                const isActive =
+                  item.to === '/documents'
+                    ? location.pathname === '/documents'
+                    : item.to === '/orders'
+                      ? location.pathname.startsWith('/orders') && !location.pathname.startsWith('/orders/converted')
+                      : location.pathname.startsWith(item.to)
                 return (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton

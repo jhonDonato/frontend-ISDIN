@@ -2,35 +2,30 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, ListFilter } from 'lucide-react'
 import { useOrders } from '@/hooks/useOrders'
-import { OrdersTable } from './components/OrdersTable'
+import { OrdersTable, clientInitials } from './components/OrdersTable'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import type { OrderStatus } from '@/types'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { IN_PROGRESS_STATUSES, ORDER_STATUS_LABEL } from '@/lib/labels'
+import type { PurchaseOrderStatus } from '@/types'
 
-const STATUS_OPTIONS: { value: OrderStatus | 'all'; label: string }[] = [
+type StatusFilter = PurchaseOrderStatus | 'all'
+
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'all', label: 'Todos los estados' },
-  { value: 'pending', label: 'Pendiente' },
-  { value: 'processing', label: 'Procesando' },
-  { value: 'needs_review', label: 'Requiere revisión' },
-  { value: 'error', label: 'Con errores' },
+  ...IN_PROGRESS_STATUSES.map((s) => ({ value: s, label: ORDER_STATUS_LABEL[s] })),
 ]
 
-/** Órdenes "Extraídas" de un cliente: excluye las ya confirmadas/exportadas (ver Convertidas a CSV). */
+/** Órdenes de un cliente que aún no salen a SAP (las exportadas están en Convertidas a CSV). */
 export function ClientOrdersPage() {
-  const { clientName } = useParams<{ clientName: string }>()
-  const [statusFilter, setStatusFilter] = useState<OrderStatus | 'all'>('all')
+  const { clientCode } = useParams<{ clientCode: string }>()
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
 
   const { orders, status, error, refetch } = useOrders({
-    client: clientName,
+    client: clientCode,
     status: statusFilter === 'all' ? undefined : statusFilter,
   })
-  const extractionOrders = orders.filter((o) => o.status !== 'completed')
+  const pending = orders.filter((o) => o.status !== 'EXPORTED')
+  const name = orders[0]?.client_name ?? clientCode ?? ''
 
   return (
     <div className="space-y-4">
@@ -42,18 +37,18 @@ export function ClientOrdersPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-base font-semibold text-primary">
-            {clientInitials(clientName ?? '')}
+            {clientInitials(name)}
           </span>
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">{clientName}</h2>
+            <h2 className="text-lg font-semibold tracking-tight">{name}</h2>
             <p className="text-sm text-muted-foreground">
-              {status === 'success' ? `${extractionOrders.length} orden(es)` : 'Cargando órdenes…'}
+              {status === 'success' ? `${pending.length} orden(es)` : 'Cargando órdenes…'}
             </p>
           </div>
         </div>
 
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as OrderStatus | 'all')}>
-          <SelectTrigger className="w-[180px]">
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+          <SelectTrigger className="w-[190px]">
             <ListFilter className="size-3.5 text-muted-foreground" />
             <SelectValue placeholder="Estado">
               {(value: string) => STATUS_OPTIONS.find((opt) => opt.value === value)?.label ?? 'Estado'}
@@ -70,7 +65,7 @@ export function ClientOrdersPage() {
       </div>
 
       <OrdersTable
-        orders={extractionOrders}
+        orders={pending}
         status={status}
         error={error}
         onRetry={refetch}
@@ -79,9 +74,4 @@ export function ClientOrdersPage() {
       />
     </div>
   )
-}
-
-function clientInitials(name: string): string {
-  const parts = name.split(' ').filter(Boolean)
-  return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase()
 }

@@ -1,5 +1,10 @@
+import { useState } from 'react'
+import { UserRound } from 'lucide-react'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
+import { Button } from '@/components/ui/button'
+import { useActor } from '@/lib/actor'
+import { ActorDialog } from './ActorDialog'
 
 interface AppHeaderProps {
   title: string
@@ -7,6 +12,9 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ title, description }: AppHeaderProps) {
+  const actor = useActor()
+  const [dialogOpen, setDialogOpen] = useState(false)
+
   return (
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur-md supports-backdrop-filter:bg-background/60 md:px-6">
       <SidebarTrigger />
@@ -16,6 +24,12 @@ export function AppHeader({ title, description }: AppHeaderProps) {
         <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">{title}</h1>
         {description && <p className="hidden truncate text-xs text-muted-foreground sm:block">{description}</p>}
       </div>
+
+      <Button variant="ghost" size="sm" className="max-w-56 gap-1.5 text-muted-foreground" onClick={() => setDialogOpen(true)}>
+        <UserRound className="size-3.5 shrink-0" />
+        <span className="truncate">{actor ?? 'Identificarse'}</span>
+      </Button>
+      <ActorDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </header>
   )
 }

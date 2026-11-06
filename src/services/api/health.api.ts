@@ -1,6 +1,6 @@
 import type { HealthResponse } from '@/types'
-import { httpClient } from './http-client'
+import { http } from './http-client'
 
 export function checkHealth(): Promise<HealthResponse> {
-  return httpClient.get<HealthResponse>('/api/health')
+  return http.get<HealthResponse>('/api/health')
 }

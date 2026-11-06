@@ -1,6 +1,6 @@
 # ISDIN Order Hub 2.0 — Frontend
 
-Frontend del proyecto de hackatón **ISDIN Order Hub 2.0**: automatiza la recepción, homologación, revisión y exportación a SAP de órdenes de compra de clientes ISDIN Chile. Este repositorio contiene únicamente el frontend; el backend (FastAPI) y el módulo Processing los desarrollan otros integrantes del equipo.
+Frontend del proyecto de hackatón **ISDIN Order Hub 2.0**: automatiza la recepción, homologación, revisión y exportación a SAP de órdenes de compra de clientes ISDIN Chile. Este repositorio contiene únicamente el frontend; el backend (FastAPI) y el módulo Processing viven en sus propios repositorios.
 
 ## Stack
 
@@ -11,16 +11,29 @@ Frontend del proyecto de hackatón **ISDIN Order Hub 2.0**: automatiza la recepc
 - [React Router](https://reactrouter.com/) para la navegación
 - [oxlint](https://oxc.rs/) para linting
 
-## Modo Mock vs. Modo API
+## Conexión con el backend
 
-El frontend funciona hoy 100% con datos simulados (`VITE_USE_MOCKS=true` en `.env`). Toda la lógica de negocio vive detrás de la interfaz `OrdersService` (`src/services/orders.types.ts`); las pantallas nunca llaman directamente al mock ni al cliente HTTP. Para conectar el backend real, basta con:
+El frontend habla siempre con el backend real (FastAPI); **ya no existe el modo con datos simulados**. El contrato es el del
+backend, con el mismo vocabulario que Processing (`src/types/api.ts`): estados `REQUIRES_REVIEW` / `READY` / `EXPORTED`,
+métodos de homologación `EXACT_CLIENT_CODE`, `SUGGESTED_REVIEW`, `MANUAL`… y códigos de alerta abiertos. El frontend **no define
+estados propios** ni calcula nada: muestra lo que dice el backend y cada acción devuelve la OC completa.
 
 ```bash
-VITE_USE_MOCKS=false
-VITE_API_BASE_URL=http://localhost:8000
+cp .env.example .env     # VITE_API_BASE_URL=http://localhost:8710
+npm run dev              # http://localhost:5710
 ```
 
-No se requiere tocar ninguna pantalla. Ver `src/services/orders.service.ts` y `src/services/dashboard.service.ts`.
+Cómo trabaja una persona con una OC (`src/hooks/useOrderWorkspace.ts`):
+
+- Al abrirla **reserva** la OC (`POST /lock`) y la renueva con un latido; al salir la libera. Si la tiene otra persona, la ve en
+  solo lectura con su nombre. Un aviso en tiempo real (SSE) refresca la pantalla cuando otra persona la cambia.
+- Cada acción envía `X-Actor` (quién), `Idempotency-Key` (anti doble clic), `If-Match` (versión vista) y `X-Lock-Token`
+  (la reserva). Códigos: 409 versión vieja o estado inválido · 422 lo rechazó Processing (mensaje en español) · 423 reservada.
+- **Usuario provisional:** hasta que exista inicio de sesión, se pide el correo y se guarda en el navegador (`src/lib/actor.ts`).
+
+Pantallas: Dashboard · Agregar documento · Órdenes (bandeja y por cliente) · Revisión de la OC · Aprobación y exportación ·
+Convertidas a CSV · **Documentos** (incluye los que fallaron, con su motivo, reproceso y sugerencia de perfil) · **Clientes**
+(registrar clientes nuevos).
 
 ## Requisitos
 
@@ -67,12 +80,9 @@ src/
 │   ├── orders/             # Pantalla B — Bandeja de órdenes
 │   ├── order-review/      # Pantalla C — Detalle y revisión
 │   └── results/            # Pantalla D — Resultados y exportación
-├── hooks/                 # useOrders, useOrderWorkspace, useDashboard, useCsvDownload
+├── hooks/                 # useOrders, useOrderWorkspace (reserva + versión + SSE), useDashboard, useDocuments, useClients
 ├── services/
-│   ├── api/                # Cliente HTTP real (FastAPI) por endpoint
-│   ├── orders.service.ts   # Facade mock/API para órdenes
-│   └── dashboard.service.ts
-├── mocks/                 # Datos simulados + servicios mock (modo VITE_USE_MOCKS=true)
+│   └── api/                # Cliente HTTP real (FastAPI): http-client + orders/documents/clients
 ├── types/                 # Contratos de dominio y de API
 ├── lib/                   # env, format, labels, utils
 ├── main.tsx

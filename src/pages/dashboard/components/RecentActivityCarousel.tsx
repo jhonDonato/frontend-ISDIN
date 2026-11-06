@@ -1,30 +1,30 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock, Hourglass, Loader2 } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Hourglass, Timer } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import {
-  Carousel,
-  CarouselContent,
-  CarouselItem,
-  CarouselNext,
-  CarouselPrevious,
-} from '@/components/ui/carousel'
+import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from '@/components/ui/carousel'
 import type { CarouselApi } from '@/components/ui/carousel'
 import { Button } from '@/components/ui/button'
 import { OrderStatusBadge } from '@/components/shared/StatusBadge'
 import { formatDateTime, formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { ActivityItem, OrderStatus } from '@/types'
+import type { OrderSummary, PurchaseOrderStatus } from '@/types'
 
-const ACTIVITY_ICON: Record<OrderStatus, { icon: LucideIcon; className: string }> = {
-  pending: { icon: Clock, className: 'bg-muted text-muted-foreground' },
-  processing: { icon: Loader2, className: 'bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-300' },
-  needs_review: { icon: Hourglass, className: 'bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300' },
-  completed: { icon: CheckCircle2, className: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300' },
-  error: { icon: AlertTriangle, className: 'bg-red-50 text-red-600 dark:bg-red-950/60 dark:text-red-300' },
+const ACTIVITY_ICON: Record<PurchaseOrderStatus, { icon: LucideIcon; className: string }> = {
+  REQUIRES_REVIEW: { icon: Hourglass, className: 'bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300' },
+  READY: { icon: Timer, className: 'bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-300' },
+  EXPORTED: { icon: CheckCircle2, className: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300' },
 }
 
-export function RecentActivityCarousel({ items }: { items: ActivityItem[] }) {
+function describe(o: OrderSummary): string {
+  const who = o.client_name ?? o.client_code ?? 'cliente sin identificar'
+  if (o.status === 'EXPORTED') return `Orden de ${who} exportada a SAP.`
+  if (o.status === 'READY') return `Orden de ${who} aprobada por ${o.approved_by ?? 'una persona'}; espera su exportación.`
+  if (o.open_errors > 0) return `Orden de ${who} con ${o.open_errors} pendiente(s) por resolver.`
+  return `Orden de ${who} sin pendientes: lista para aprobar.`
+}
+
+export function RecentActivityCarousel({ items }: { items: OrderSummary[] }) {
   const [api, setApi] = useState<CarouselApi>()
   const [selected, setSelected] = useState(0)
 
@@ -51,25 +51,27 @@ export function RecentActivityCarousel({ items }: { items: ActivityItem[] }) {
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2.5">
                     <span className={cn('flex size-9 shrink-0 items-center justify-center rounded-lg', className)}>
-                      <Icon className={cn('size-4', item.status === 'processing' && 'animate-spin')} />
+                      <Icon className="size-4" />
                     </span>
                     <div>
-                      <p className="text-sm font-semibold">{item.purchaseOrderNumber}</p>
-                      <p className="text-[11px] text-muted-foreground" title={formatDateTime(item.timestamp)}>
-                        {formatRelativeTime(item.timestamp)}
-                      </p>
+                      <p className="text-sm font-semibold">{item.order_number ?? 'Sin N° de OC'}</p>
+                      {item.updated_at && (
+                        <p className="text-[11px] text-muted-foreground" title={formatDateTime(item.updated_at)}>
+                          {formatRelativeTime(item.updated_at)}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <OrderStatusBadge status={item.status} />
                 </div>
 
-                <p className="flex-1 text-sm text-muted-foreground">{item.message}</p>
+                <p className="flex-1 text-sm text-muted-foreground">{describe(item)}</p>
 
                 <Button
                   size="sm"
                   variant="ghost"
                   className="w-fit self-end text-muted-foreground hover:text-foreground"
-                  render={<Link to={`/orders/${item.orderId}`} />}
+                  render={<Link to={item.status === 'EXPORTED' ? `/orders/${item.id}/results` : `/orders/${item.id}`} />}
                 >
                   Ver orden
                   <ArrowRight className="size-3.5" />
